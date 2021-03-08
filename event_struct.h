@@ -43,6 +43,14 @@ struct event_base;
 struct event {
  	struct event_callback ev_evcallback;	//回调函数，一个event对应一个event_callback，可以互相转�?
 
+	union {
+		struct {
+			struct event *tqe_next;	/* next element */			\
+			struct event **tqe_prev;	/* address of previous next element */	\
+		} ev_next_with_common_timeout;
+		int min_heap_idx;
+	} ev_timeout_pos;
+
 	evutil_socket_t ev_fd;		//fd
 
  	struct event_base *ev_base;		//base
@@ -53,13 +61,13 @@ struct event {
 				struct event *le_next;	
 				struct event **le_prev;	
 			} ev_io_next;	//指向下一个event
-			//struct timeval ev_timeout;
+			struct timeval ev_timeout;
 		} ev_io;
 	} ev_;
 
 	short ev_events;	//要监控的事件类型：EV_TIMEOUT,EV_READ,EV_WRITE
 	short ev_res;		//触发的事件类�?
-	//struct timeval ev_timeout;	
+	struct timeval ev_timeout;	
 };
 
 struct event_dlist {

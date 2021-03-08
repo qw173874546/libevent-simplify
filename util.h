@@ -8,6 +8,9 @@ extern "C" {
 
 #include <stdlib.h>
 #include <limits.h>
+#ifndef _WIN32
+#include <sys/time.h>
+#endif
 
 //定义通用数据类型
 #define ev_uint64_t unsigned long long
@@ -41,6 +44,45 @@ int evutil_make_socket_nonblocking(evutil_socket_t sock);
 int evutil_make_listen_socket_reuseable(evutil_socket_t sock);
 
 int evutil_closesocket(evutil_socket_t sock);
+
+#ifndef _WIN32
+#define evutil_gettimeofday(tv, tz) gettimeofday((tv), (tz))
+#else
+struct timezone;
+int evutil_gettimeofday(struct timeval *tv, struct timezone *tz);
+#endif
+
+#ifdef EVENT__HAVE_TIMERADD
+#define evutil_timeradd(tvp, uvp, vvp) timeradd((tvp), (uvp), (vvp))
+#define evutil_timersub(tvp, uvp, vvp) timersub((tvp), (uvp), (vvp))
+#else
+#define evutil_timeradd(tvp, uvp, vvp)					\
+do {\
+(vvp)->tv_sec = (tvp)->tv_sec + (uvp)->tv_sec;		\
+(vvp)->tv_usec = (tvp)->tv_usec + (uvp)->tv_usec;       \
+if ((vvp)->tv_usec >= 1000000) {	\
+		(vvp)->tv_sec++;				\
+		(vvp)->tv_usec -= 1000000;			\
+}							\
+} while (0)
+#define	evutil_timersub(tvp, uvp, vvp)					\
+do {\
+(vvp)->tv_sec = (tvp)->tv_sec - (uvp)->tv_sec;		\
+(vvp)->tv_usec = (tvp)->tv_usec - (uvp)->tv_usec;	\
+	if ((vvp)->tv_usec < 0) {		\
+			(vvp)->tv_sec--;				\
+			(vvp)->tv_usec += 1000000;			\
+	}							\
+} while (0)
+#endif /* !EVENT__HAVE_TIMERADD */
+#define	evutil_timercmp(tvp, uvp, cmp)					\
+	(((tvp)->tv_sec == (uvp)->tv_sec) ?				\
+	((tvp)->tv_usec cmp (uvp)->tv_usec) :				\
+	((tvp)->tv_sec cmp(uvp)->tv_sec))
+
+
+#define EV_MONOT_PRECISE  1
+#define EV_MONOT_FALLBACK 2
 
 #ifdef __cplusplus
 }

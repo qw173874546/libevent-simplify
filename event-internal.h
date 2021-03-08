@@ -8,6 +8,8 @@ extern "C" {
 
 #include "util.h"
 #include "event.h"
+#include "minheap-internal.h"
+#include "time-internal.h"
 
 //表明是常规的读写事件，执行evcb_callback回调
 #define EV_CLOSURE_EVENT 0
@@ -64,6 +66,24 @@ struct event_base {
 
 	struct evcallback_list *activequeues;		//evcallback_list数组
 	int nactivequeues;							//evcallback_list数组长度
+
+	struct min_heap timeheap;
+
+	struct timeval tv_cache;
+
+	struct evutil_monotonic_timer monotonic_timer;
+
+	struct timeval tv_clock_diff;
+
+	time_t last_updated_clock_diff;
+
+	enum event_base_config_flag flags;
+
+	struct common_timeout_list **common_timeout_queues;
+
+	int n_common_timeouts;
+
+	int n_common_timeouts_allocated;
 };
 
 //忽略的io模型链表
@@ -80,6 +100,8 @@ struct event_config {
 		struct event_config_entry *tqh_first;	
 		struct event_config_entry **tqh_last;	
 	} entries;	//忽略的io模型链表
+
+	enum event_base_config_flag flags;
 };
 
 //用不�?

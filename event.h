@@ -32,6 +32,15 @@ enum event_method_feature {
 	EV_FEATURE_EARLY_CLOSE = 0x08
 };
 
+enum event_base_config_flag {
+	EVENT_BASE_FLAG_NOLOCK = 0x01,
+	EVENT_BASE_FLAG_IGNORE_ENV = 0x02,
+	EVENT_BASE_FLAG_STARTUP_IOCP = 0x04,
+	EVENT_BASE_FLAG_NO_CACHE_TIME = 0x08,
+	EVENT_BASE_FLAG_EPOLL_USE_CHANGELIST = 0x10,
+	EVENT_BASE_FLAG_PRECISE_TIMER = 0x20
+};
+
 struct event_base *event_base_new(void);
 
 struct event_config *event_config_new(void);
@@ -41,6 +50,8 @@ struct event_base *event_base_new_with_config(const struct event_config *);
 void event_config_free(struct event_config *cfg);
 
 void event_base_free(struct event_base *);
+
+int event_config_set_flag(struct event_config *cfg, int flag);
 
 int event_config_avoid_method(struct event_config *cfg, const char *method);
 

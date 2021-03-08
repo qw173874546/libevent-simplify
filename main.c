@@ -48,12 +48,16 @@ void do_accept(evutil_socket_t fd, short event, void *arg)
 	printf("do_accept:%d\n", conn_fd);
 
 	struct event_base *base = (struct event_base *)arg;
-	struct timeval tv;
-	tv.tv_usec = 0;
-	tv.tv_sec = 0;
 
 	struct event *ev_read = event_new(base, conn_fd, EV_READ | EV_PERSIST, read_cb, event_self_cbarg());
-	event_add(ev_read, &tv);
+	event_add(ev_read, NULL);
+}
+
+void timeout_cb(evutil_socket_t fd, short event, void *arg)
+{
+	struct timeval tv;
+	evutil_gettimeofday(&tv, NULL);
+	printf("timeout_cb:s=%ld,ms=%ld\n",tv.tv_sec,tv.tv_usec);
 }
 
 int main()
@@ -91,13 +95,18 @@ int main()
 	printf("used method:%s\n",event_base_get_method(base));
 
 	struct event *ev_listen = event_new(base, listen_fd, EV_READ | EV_PERSIST, do_accept, base);
+	
+	event_add(ev_listen, NULL);
+
+	struct event *ev_timer = event_new(base, -1, EV_TIMEOUT | EV_PERSIST, timeout_cb, base);
 	struct timeval tv;
 	tv.tv_usec = 0;
-	tv.tv_sec = 0;
-	event_add(ev_listen, &tv);
+	tv.tv_sec = 2;
+	event_add(ev_timer, &tv);
 
 	event_base_dispatch(base);
 	event_free(ev_listen);
+	event_free(ev_timer);
 	event_base_free(base);
 	return 0;
 }

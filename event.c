@@ -11,6 +11,7 @@
 #include "event-internal.h"
 #include "evmap-internal.h"
 #include "mm-internal.h"
+#include "time-internal.h"
 
 #ifdef EVENT__HAVE_EVENT_PORTS
 extern const struct eventop evportops;
@@ -67,9 +68,12 @@ static void	event_queue_insert_active(struct event_base *, struct event_callback
 static void	event_queue_remove_active(struct event_base *, struct event_callback *);
 static void	event_queue_insert_inserted(struct event_base *, struct event *);
 static void	event_queue_remove_inserted(struct event_base *, struct event *);
+static void	event_queue_insert_timeout(struct event_base *, struct event *);
+static void	event_queue_remove_timeout(struct event_base *, struct event *);
 static void	event_persist_closure(struct event_base *, struct event *ev);
 static int	event_process_active(struct event_base *);
 static int  event_del_(struct event *ev, int blocking);
+static void	timeout_process(struct event_base *);
 
 static struct event *event_callback_to_event(struct event_callback *evcb)
 {
@@ -79,6 +83,40 @@ static struct event *event_callback_to_event(struct event_callback *evcb)
 static struct event_callback * event_to_event_callback(struct event *ev)
 {
 	return &ev->ev_evcallback;
+}
+
+static void clear_time_cache(struct event_base *base)
+{
+	base->tv_cache.tv_sec = 0;
+}
+
+#define CLOCK_SYNC_INTERVAL 5
+static int gettime(struct event_base *base, struct timeval *tp)
+{
+	if (base->tv_cache.tv_sec) {
+		*tp = base->tv_cache;
+		return (0);
+	}
+
+	if (evutil_gettime_monotonic_(&base->monotonic_timer, tp) == -1) {
+		return -1;
+	}
+
+	if (base->last_updated_clock_diff + CLOCK_SYNC_INTERVAL < tp->tv_sec) {
+		struct timeval tv;
+		evutil_gettimeofday(&tv, NULL);
+		evutil_timersub(&tv, tp, &base->tv_clock_diff);
+		base->last_updated_clock_diff = tp->tv_sec;
+	}
+
+	return 0;
+}
+
+static void update_time_cache(struct event_base *base)
+{
+	base->tv_cache.tv_sec = 0;
+	if (!(base->flags & EVENT_BASE_FLAG_NO_CACHE_TIME))
+		gettime(base, &base->tv_cache);
 }
 
 static int event_config_is_avoided_method(const struct event_config *cfg,const char *method)
@@ -128,6 +166,15 @@ struct event_base *event_base_new_with_config(const struct event_config *cfg)
 		return NULL;
 	}
 
+	int precise_time = cfg && (cfg->flags & EVENT_BASE_FLAG_PRECISE_TIMER);
+	int flags;
+	struct timeval tmp;
+	flags = precise_time ? EV_MONOT_PRECISE : 0;
+	evutil_configure_monotonic_time_(&base->monotonic_timer, flags);
+	gettime(base, &tmp);
+
+	min_heap_ctor_(&base->timeheap);
+
 	evmap_io_initmap_(&base->io);
 
 	base->evbase = NULL;
@@ -145,6 +192,7 @@ struct event_base *event_base_new_with_config(const struct event_config *cfg)
 	if (base->evbase == NULL) {
 		base->evsel = NULL;
 		event_base_free(base);
+		printf("evbase == NULL");
 		return NULL;
 	}
 
@@ -176,6 +224,14 @@ void event_config_free(struct event_config *cfg)
 		event_config_entry_free(entry);
 	}
 	mm_free(cfg);
+}
+
+int event_config_set_flag(struct event_config *cfg, int flag)
+{
+	if (!cfg)
+		return -1;
+	cfg->flags |= flag;
+	return 0;
 }
 
 int event_config_avoid_method(struct event_config *cfg, const char *method)
@@ -308,6 +364,12 @@ int event_add_nolock_(struct event *ev, const struct timeval *tv,int tv_is_absol
 {
 	struct event_base *base = ev->ev_base;
 	int res = 0;
+	int notify = 0;
+
+	if (tv != NULL && !(ev->ev_evcallback.evcb_flags & EVLIST_TIMEOUT)) {
+		if (min_heap_reserve_(&base->timeheap,1 + min_heap_size_(&base->timeheap)) == -1)
+			return (-1); 
+	}
 
 	if ((ev->ev_events & (EV_READ | EV_WRITE | EV_CLOSED )) && !(ev->ev_evcallback.evcb_flags & (EVLIST_INSERTED | EVLIST_ACTIVE ))) {
 		if (ev->ev_events & (EV_READ | EV_WRITE | EV_CLOSED))
@@ -319,6 +381,26 @@ int event_add_nolock_(struct event *ev, const struct timeval *tv,int tv_is_absol
 		}
 	}
 
+	if (res != -1 && tv != NULL) {
+		struct timeval now;
+
+		if (ev->ev_evcallback.evcb_closure == EV_CLOSURE_EVENT_PERSIST && !tv_is_absolute)
+			ev->ev_.ev_io.ev_timeout = *tv;
+
+		if ((ev->ev_evcallback.evcb_flags & EVLIST_ACTIVE) && (ev->ev_res & EV_TIMEOUT)) {
+			event_queue_remove_active(base, event_to_event_callback(ev));
+		}
+
+		gettime(base, &now);
+		if (tv_is_absolute) {
+			ev->ev_timeout = *tv;
+		}
+		else {
+			evutil_timeradd(&now, tv, &ev->ev_timeout);
+		}
+
+		event_queue_insert_timeout(base, ev);
+	}
 	return (res);
 }
 
@@ -332,17 +414,23 @@ int event_base_loop(struct event_base *base, int flags)
 	const struct eventop *evsel = base->evsel;
 	int res, done, retval = 0;
 	struct timeval tv;
+	struct timeval *tv_p;
 	done = 0;
 
 	while (!done) {
+		tv_p = &tv;
+
 		evutil_timerclear(&tv);
+
+		clear_time_cache(base);
 		res = evsel->dispatch(base, &tv);
 
 		if (res == -1) {
 			retval = -1;
 			goto done;
 		}
-
+		update_time_cache(base);
+		timeout_process(base);
 		if (base->event_count_active) {
 			int n = event_process_active(base);
 			if ((flags & EVLOOP_ONCE) && base->event_count_active == 0 && n != 0)
@@ -403,6 +491,10 @@ int event_del_nolock_(struct event *ev, int blocking)
 
 	base = ev->ev_base;
 
+	if (ev->ev_evcallback.evcb_flags & EVLIST_TIMEOUT) {
+		event_queue_remove_timeout(base, ev);
+	}
+
 	if (ev->ev_evcallback.evcb_flags & EVLIST_ACTIVE)
 		event_queue_remove_active(base, event_to_event_callback(ev));
 
@@ -436,6 +528,28 @@ static void event_persist_closure(struct event_base *base, struct event *ev)
 	evutil_socket_t evcb_fd;
 	short evcb_res;
 	void *evcb_arg;
+
+	if (ev->ev_.ev_io.ev_timeout.tv_sec || ev->ev_.ev_io.ev_timeout.tv_usec) {
+		struct timeval run_at, relative_to, delay, now;
+		ev_uint32_t usec_mask = 0;
+
+		gettime(base, &now);
+		delay = ev->ev_.ev_io.ev_timeout;
+		if (ev->ev_res & EV_TIMEOUT) {
+			relative_to = ev->ev_timeout;
+		}
+		else {
+			relative_to = now;
+		}
+		
+		evutil_timeradd(&relative_to, &delay, &run_at);
+		if (evutil_timercmp(&run_at, &now, <)) {
+			evutil_timeradd(&now, &delay, &run_at);
+		}
+		run_at.tv_usec |= usec_mask;
+		event_add_nolock_(ev, &run_at, 1);
+	}
+
 
 	evcb_callback = ev->ev_evcallback.evcb_cb_union.evcb_callback;
 	evcb_fd = ev->ev_fd;
@@ -568,4 +682,37 @@ static int event_del_(struct event *ev, int blocking)
 const char *event_base_get_method(const struct event_base *base)
 {
 	return (base->evsel->name);
+}
+
+static void event_queue_insert_timeout(struct event_base *base, struct event *ev)
+{
+	ev->ev_evcallback.evcb_flags |= EVLIST_TIMEOUT;
+
+	min_heap_push_(&base->timeheap, ev);
+}
+
+static void event_queue_remove_timeout(struct event_base *base, struct event *ev)
+{
+	ev->ev_evcallback.evcb_flags &= ~EVLIST_TIMEOUT;
+
+	min_heap_erase_(&base->timeheap, ev);
+}
+
+static void timeout_process(struct event_base *base)
+{
+	struct timeval now;
+	struct event *ev;
+
+	if (min_heap_empty_(&base->timeheap)) {
+		return;
+	}
+
+	gettime(base, &now);
+
+	while ((ev = min_heap_top_(&base->timeheap))) {
+		if (evutil_timercmp(&ev->ev_timeout, &now, > ))
+			break;
+		event_del_nolock_(ev, EVENT_DEL_NOBLOCK);
+		event_active_nolock_(ev, EV_TIMEOUT, 1);
+	}
 }
