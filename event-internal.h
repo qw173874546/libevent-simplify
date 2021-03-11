@@ -20,7 +20,7 @@ extern "C" {
 //表明是简单的回调，使用evcb_selfcb回调
 //#define EV_CLOSURE_CB_SELF 3
 //表明是结束型回调，使用evcb_cbfinalize回调
-//#define EV_CLOSURE_CB_FINALIZE 4
+#define EV_CLOSURE_CB_FINALIZE 4
 //表明是结束事件，使用evcb_evfinalize回调
 //#define EV_CLOSURE_EVENT_FINALIZE 5
 //正在结束的事件后面应该释放；使用evcb_evfinalize回调
@@ -84,6 +84,8 @@ struct event_base {
 	int n_common_timeouts;
 
 	int n_common_timeouts_allocated;
+
+	struct event_callback *current_event;
 };
 
 //忽略的io模型链表
@@ -117,6 +119,12 @@ void event_active_nolock_(struct event *ev, int res, short count);
 int event_callback_activate_nolock_(struct event_base *, struct event_callback *);
 
 int event_del_nolock_(struct event *ev, int blocking);
+
+void event_callback_finalize_nolock_(struct event_base *base, unsigned flags, struct event_callback *evcb, void(*cb)(struct event_callback *, void *));
+//void event_callback_finalize_(struct event_base *base, unsigned flags, struct event_callback *evcb, void (*cb)(struct event_callback *, void *));
+int event_callback_finalize_many_(struct event_base *base, int n_cbs, struct event_callback **evcb, void (*cb)(struct event_callback *, void *));
+
+int event_callback_cancel_nolock_(struct event_base *base,struct event_callback *evcb, int even_if_finalizing);
 
 #ifdef __cplusplus
 }

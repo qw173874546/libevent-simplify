@@ -75,6 +75,8 @@ void *event_self_cbarg(void);
 
 const char *event_base_get_method(const struct event_base *);
 
+evutil_socket_t event_get_fd(const struct event *ev);
+
 #ifdef __cplusplus
 }
 #endif

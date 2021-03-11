@@ -323,7 +323,7 @@ int event_assign(struct event *ev, struct event_base *base, evutil_socket_t fd, 
 	ev->ev_evcallback.evcb_flags = EVLIST_INIT;
 
 	if (events & EV_PERSIST) {
-		//evutil_timerclear(&ev->ev_io_timeout);
+		evutil_timerclear(&ev->ev_.ev_io.ev_timeout);
 		ev->ev_evcallback.evcb_closure = EV_CLOSURE_EVENT_PERSIST;
 	}
 	else {
@@ -356,7 +356,7 @@ int event_add(struct event *ev, const struct timeval *tv)
 	int res;
 
 	res = event_add_nolock_(ev, tv, 0);
-
+	
 	return (res);
 }
 
@@ -520,6 +520,11 @@ void *event_self_cbarg(void)
 	return &event_self_cbarg_ptr_;
 }
 
+evutil_socket_t event_get_fd(const struct event *ev)
+{
+	return ev->ev_fd;
+}
+
 
 static void event_persist_closure(struct event_base *base, struct event *ev)
 {
@@ -569,7 +574,7 @@ static int event_process_active_single_queue(struct event_base *base, struct evc
 		if (evcb->evcb_flags & EVLIST_INIT) {
 			ev = event_callback_to_event(evcb);
 
-			if (ev->ev_events & EV_PERSIST)
+			if (ev->ev_events & EV_PERSIST || ev->ev_evcallback.evcb_flags & EVLIST_FINALIZING)
 				event_queue_remove_active(base, evcb);
 			else
 				event_del_nolock_(ev, EVENT_DEL_NOBLOCK);
@@ -580,6 +585,7 @@ static int event_process_active_single_queue(struct event_base *base, struct evc
 
 		if (!(evcb->evcb_flags & EVLIST_INTERNAL))
 			++count;
+		base->current_event = evcb;
 
 		switch (evcb->evcb_closure) {
 		case EV_CLOSURE_EVENT_PERSIST:
@@ -593,9 +599,16 @@ static int event_process_active_single_queue(struct event_base *base, struct evc
 								   evcb_callback(ev->ev_fd, res, ev->ev_evcallback.evcb_arg);
 		}
 			break;
+		case EV_CLOSURE_CB_FINALIZE: {
+										 void(*evcb_cbfinalize)(struct event_callback *, void *) = evcb->evcb_cb_union.evcb_cbfinalize;
+										 base->current_event = NULL;
+										 evcb_cbfinalize(evcb, evcb->evcb_arg);
+		}
+			break;
 		default:
 			break;
 		}
+		base->current_event = NULL;
 
 		if (count >= max_to_process)
 			return count;
@@ -715,4 +728,65 @@ static void timeout_process(struct event_base *base)
 		event_del_nolock_(ev, EVENT_DEL_NOBLOCK);
 		event_active_nolock_(ev, EV_TIMEOUT, 1);
 	}
+}
+
+int event_callback_cancel_nolock_(struct event_base *base,struct event_callback *evcb, int even_if_finalizing)
+{
+	if ((evcb->evcb_flags & EVLIST_FINALIZING) && !even_if_finalizing)
+		return 0;
+
+	if (evcb->evcb_flags & EVLIST_INIT)
+		return event_del_nolock_(event_callback_to_event(evcb),even_if_finalizing ? EVENT_DEL_EVEN_IF_FINALIZING : EVENT_DEL_AUTOBLOCK);
+
+	switch ((evcb->evcb_flags & (EVLIST_ACTIVE ))) {
+	default:
+		break;
+	case EVLIST_ACTIVE:
+		event_queue_remove_active(base, evcb);
+		return 0;
+	case 0:
+		break;
+	}
+
+	return 0;
+}
+
+void event_callback_finalize_nolock_(struct event_base *base, unsigned flags, struct event_callback *evcb, void(*cb)(struct event_callback *, void *))
+{
+	struct event *ev = NULL;
+	if (evcb->evcb_flags & EVLIST_INIT) {
+		ev = event_callback_to_event(evcb);
+		event_del_nolock_(ev, EVENT_DEL_NOBLOCK);
+	}
+	else {
+		event_callback_cancel_nolock_(base, evcb, 0); /*XXX can this fail?*/
+	}
+
+	evcb->evcb_closure = EV_CLOSURE_CB_FINALIZE;
+	evcb->evcb_cb_union.evcb_cbfinalize = cb;
+	event_callback_activate_nolock_(base, evcb); /* XXX can this really fail?*/
+	evcb->evcb_flags |= EVLIST_FINALIZING;
+}
+
+
+int event_callback_finalize_many_(struct event_base *base, int n_cbs, struct event_callback **evcbs, void(*cb)(struct event_callback *, void *))
+{
+	int n_pending = 0, i;
+
+	for (i = 0; i < n_cbs; ++i) {
+		struct event_callback *evcb = evcbs[i];
+		if (evcb == base->current_event) {
+			event_callback_finalize_nolock_(base, 0, evcb, cb);
+			++n_pending;
+		}
+		else {
+			event_callback_cancel_nolock_(base, evcb, 0);
+		}
+	}
+
+	if (n_pending == 0) {
+		event_callback_finalize_nolock_(base, 0, evcbs[0], cb);
+	}
+
+	return 0;
 }

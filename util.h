@@ -8,6 +8,7 @@ extern "C" {
 
 #include <stdlib.h>
 #include <limits.h>
+#include <stddef.h>
 #ifndef _WIN32
 #include <sys/time.h>
 #endif
@@ -36,6 +37,9 @@ extern "C" {
 #else
 #define ev_socklen_t socklen_t
 #endif
+
+#define ev_ssize_t int
+#define evutil_offsetof(type, field) offsetof(type, field)
 
 #define	evutil_timerclear(tvp)	(tvp)->tv_sec = (tvp)->tv_usec = 0
 
@@ -80,6 +84,10 @@ do {\
 	((tvp)->tv_usec cmp (uvp)->tv_usec) :				\
 	((tvp)->tv_sec cmp(uvp)->tv_sec))
 
+#define	evutil_timerisset(tvp)	((tvp)->tv_sec || (tvp)->tv_usec)
+
+#define EVUTIL_UPCAST(ptr, type, field)				\
+	((type *)(((char*)(ptr)) - evutil_offsetof(type, field)))
 
 #define EV_MONOT_PRECISE  1
 #define EV_MONOT_FALLBACK 2

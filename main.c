@@ -15,6 +15,27 @@
 
 #include <stdio.h>
 #include "event.h"
+#include "bufferevent.h"
+
+void bev_read_cb(struct bufferevent *bev, void *ctx)
+{
+	char tmp[1024] = { 0 };
+	bufferevent_read(bev, tmp, 1024);
+	printf("bev_read_cb:%s\n", tmp);
+}
+
+void bev_write_cb(struct bufferevent *bev, void *ctx)
+{
+	printf("bev_write_cb\n");
+}
+
+void bev_error_cb(struct bufferevent *bev, short what, void *ctx)
+{
+	int fd = bufferevent_getfd(bev);
+	bufferevent_free(bev);
+	evutil_closesocket(fd);
+	printf("bev_error_cb:%d\n", what);
+}
 
 void read_cb(evutil_socket_t fd, short event, void *arg)
 {
@@ -47,10 +68,14 @@ void do_accept(evutil_socket_t fd, short event, void *arg)
 
 	printf("do_accept:%d\n", conn_fd);
 
-	struct event_base *base = (struct event_base *)arg;
+ 	struct event_base *base = (struct event_base *)arg;
 
-	struct event *ev_read = event_new(base, conn_fd, EV_READ | EV_PERSIST, read_cb, event_self_cbarg());
-	event_add(ev_read, NULL);
+// 	struct event *ev_read = event_new(base, conn_fd, EV_READ | EV_PERSIST, read_cb, event_self_cbarg());
+// 	event_add(ev_read, NULL);
+
+	struct bufferevent *bev = bufferevent_socket_new(base, conn_fd, BEV_OPT_CLOSE_ON_FREE);
+	bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_error_cb, arg);
+	bufferevent_enable(bev, EV_READ | EV_WRITE | EV_PERSIST);
 }
 
 void timeout_cb(evutil_socket_t fd, short event, void *arg)
@@ -95,18 +120,18 @@ int main()
 	printf("used method:%s\n",event_base_get_method(base));
 
 	struct event *ev_listen = event_new(base, listen_fd, EV_READ | EV_PERSIST, do_accept, base);
-	
 	event_add(ev_listen, NULL);
 
-	struct event *ev_timer = event_new(base, -1, EV_TIMEOUT | EV_PERSIST, timeout_cb, base);
-	struct timeval tv;
-	tv.tv_usec = 0;
-	tv.tv_sec = 2;
-	event_add(ev_timer, &tv);
+// 	struct event *ev_timer = event_new(base, -1, EV_TIMEOUT | EV_PERSIST, timeout_cb, base);
+// 	struct timeval tv;
+// 	tv.tv_usec = 0;
+// 	tv.tv_sec = 2;
+// 	event_add(ev_timer, &tv);
 
 	event_base_dispatch(base);
 	event_free(ev_listen);
-	event_free(ev_timer);
+//	event_free(ev_timer);
 	event_base_free(base);
+
 	return 0;
 }
